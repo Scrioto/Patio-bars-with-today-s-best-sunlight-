@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Sac Patio Sun Map</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+
+<style>
+  :root{
+    --bg:#0f1116; --text:#f5f6fa; --muted:#c9cede; --line:rgba(255,255,255,.10);
+    --accent:#ffb020;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,system-ui}
+  header{padding:14px 14px 8px;font-weight:900;font-size:18px;letter-spacing:.2px}
+  #banner{
+    position:sticky; top:0; z-index:999;
+    background:rgba(255,176,32,.92); color:#111;
+    padding:12px 14px; font-weight:950; line-height:1.2;
+    backdrop-filter: blur(10px);
+    border-bottom:1px solid rgba(0,0,0,.08);
+  }
+  #banner .sub{display:block;font-size:12px;font-weight:850;opacity:.9;margin-top:4px}
+  #subBanner{
+    background:rgba(255,255,255,.04);
+    color:var(--muted);
+    padding:10px 14px;
+    font-weight:750;
+    font-size:12px;
+    border-bottom:1px solid var(--line);
+  }
+  #map{height:52vh}
+  .tabs{display:flex; gap:8px; padding:10px 14px}
+  .tab{
+    flex:1; padding:10px 12px; text-align:center;
+    border-radius:999px;
+    background:rgba(255,255,255,.04);
+    border:1px solid var(--line);
+    color:var(--muted);
+    font-weight:900;
+    user-select:none;
+  }
+  .tab.active{
+    background:rgba(255,176,32,.14);
+    border-color:rgba(255,176,32,.35);
+    color:var(--text);
+  }
+  .panel{padding:14px}
+  .btnRow{display:flex; gap:10px; margin-bottom:12px}
+  button{
+    flex:1;
+    padding:12px 12px;
+    border-radius:14px;
+    border:1px solid rgba(255,255,255,.12);
+    background:linear-gradient(180deg, rgba(255,176,32,1), rgba(255,176,32,.85));
+    color:#111;
+    font-weight:1000;
+  }
+  button.secondary{
+    background:rgba(255,255,255,.04);
+    color:var(--muted);
+    font-weight:900;
+  }
+  .list{
+    border:1px solid var(--line);
+    border-radius:16px;
+    overflow:hidden;
+    background:rgba(255,255,255,.02);
+  }
+  .item{
+    padding:10px 12px;
+    border-bottom:1px solid var(--line);
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+  }
+  .item:last-child{border-bottom:none}
+  .name{font-weight:1000}
+  .meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .scorePill{
+    font-variant-numeric: tabular-nums;
+    font-weight:1000;
+    padding:5px 10px;
+    border-radius:999px;
+    border:1px solid var(--line);
+    background:rgba(255,255,255,.04);
+    align-self:flex-start;
+    white-space:nowrap;
+  }
+  .forecastCard{
+    background:rgba(255,255,255,.03);
+    border:1px solid var(--line);
+    padding:10px 12px;
+    border-radius:16px;
+    margin-bottom:10px;
+  }
+  .forecastTop{display:flex; justify-content:space-between; align-items:baseline; gap:10px}
+  .forecastDay{font-weight:1000}
+  .forecastDate{color:var(--muted); font-size:12px; margin-top:2px}
+  .small{color:var(--muted); font-size:12px}
+  .leaflet-control-attribution{background:rgba(0,0,0,.35)!important;color:#ddd!important;border-radius:10px;padding:2px 8px}
+  .leaflet-container{background:#0b0d12}
+  .bestPulse{animation:pulse 1.9s ease-in-out infinite; transform-origin:center;}
+  @keyframes pulse{0%{transform:scale(1)}50%{transform:scale(1.18)}100%{transform:scale(1)}}
+</style>
+</head>
+<body>
+
+<header>Sac Patio Sun Map ☀️</header>
+<div id="banner">Calculating…<span class="sub">—</span></div>
+<div id="subBanner">Real-time mode: uses <b>next 60 minutes</b> (only when within 12pm–6pm). Outside the window, it shows the <b>best upcoming 12–6</b> patio.</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showToday()" id="todayTab">Today</div>
+  <div class="tab" onclick="showForecast()" id="forecastTab">7-Day</div>
+</div>
+
+<div id="map"></div>
+
+<div class="panel" id="todayPanel">
+  <div class="btnRow">
+    <button onclick="refreshAll()">Refresh</button>
+    <button class="secondary" onclick="centerOnMe()">Center on me</button>
+  </div>
+  <div class="list" id="list"></div>
+</div>
+
+<div class="panel" id="forecastPanel" style="display:none">
+  <div id="forecast"></div>
+</div>
+
+<script>
+  // Default daily window: 12pm–6pm
+  const DAY_START_HOUR = 12;
+  const DAY_END_HOUR   = 18;
+
+  // Real-time window length (minutes) when we're inside 12–6
+  const NOW_WINDOW_MIN = 60;
+  const NOW_STEP_MIN   = 10;
+
+  // Facing degrees: N=0, E=90, S=180, W=270
+  // Fieldwork: 1805 Capitol Ave, Sacramento (approx coords)
+  const venues = [
+    { name:"LowBrau", address:"1050 20th St", lat:38.5758075, lng:-121.4804924, facing:90,  shade:0.25 },
+    { name:"Biergarten", address:"2332 K St", lat:38.5732770, lng:-121.4747560, facing:0,   shade:0.15 },
+    { name:"Karma Brew", address:"1530 16th St", lat:38.5717379, lng:-121.4881967, facing:90, shade:0.30 },
+    { name:"Midtown Spirits", address:"1731 L St", lat:38.5752550, lng:-121.4826070, facing:270, shade:0.45 },
+    { name:"SacYard", address:"1725 33rd St", lat:38.5642675, lng:-121.46562997, facing:270, shade:0.10 },
+    { name:"Iron Horse Tavern", address:"1800 15th St", lat:38.5770000, lng:-121.4817000, facing:0, shade:0.25 },
+    { name:"Kupros", address:"1517 21st St", lat:38.5715, lng:-121.4762, facing:270, shade:0.30 },
+    { name:"Fieldwork Brewing Co.", address:"1805 Capitol Ave", lat:38.5741465, lng:-121.4836090, facing:180, shade:0.25 } // south-facing patio
+  ];
+
+  // --- Map (dark tiles) ---
+  const map = L.map('map', { zoomControl:false }).setView([38.575, -121.485], 13);
+  L.control.zoom({ position:'bottomright' }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap & CARTO', maxZoom: 19
+  }).addTo(map);
+
+  let markerObjs = []; // { venue, marker, scoreNow, scoreDay }
+
+  function degDiff(a,b){ return Math.abs(((a - b + 540) % 360) - 180); }
+
+  // Smooth gradient (0..100) -> HSL (cool->hot)
+  function color(score){
+    const clamped = Math.max(0, Math.min(100, score));
+    const hue = 210 - (clamped * 1.8); // 210 blue -> ~30 orange
+    return `hsl(${hue}, 90%, 58%)`;
+  }
+  function glowCSS(c){ return `drop-shadow(0 0 10px ${c}) drop-shadow(0 0 5px rgba(255,255,255,.15))`; }
+  function scoreEmoji(score){ return (score>=60)?"🔥":(score>=45)?"☀️":(score>=30)?"⛅️":"🌥️"; }
+
+  function formatHourMin(d){
+    let h = d.getHours(), m = d.getMinutes();
+    const ampm = h >= 12 ? "pm" : "am";
+    h = ((h + 11) % 12) + 1;
+    return `${h}:${String(m).padStart(2,'0')}${ampm}`;
+  }
+  function formatHour(h){
+    const ampm = h >= 12 ? 'pm' : 'am';
+    const hr = ((h + 11) % 12) + 1;
+    return `${hr}${ampm}`;
+  }
+  function dirLabel(deg){
+    if(deg===0) return "N"; if(deg===90) return "E"; if(deg===180) return "S"; if(deg===270) return "W";
+    return `${deg}°`;
+  }
+
+  function clearMarkers(){
+    markerObjs.forEach(o => map.removeLayer(o.marker));
+    markerObjs = [];
+  }
+
+  // Score across a custom time range with step minutes (inclusive start, inclusive end)
+  function scoreVenueRange(v, startDateTime, endDateTime, stepMin){
+    let total = 0, samples = 0;
+    for(let t = new Date(startDateTime); t <= endDateTime; t = new Date(t.getTime() + stepMin*60000)){
+      const pos = SunCalc.getPosition(t, v.lat, v.lng);
+      const alt = pos.altitude * 180/Math.PI;
+      if(alt <= 0) continue;
+      const az = (pos.azimuth * 180/Math.PI + 180 + 360) % 360;
+      const facing = Math.max(0, 1 - degDiff(az, v.facing)/90);
+      // altitude weighting for nicer realism
+      const altNorm = Math.max(0, Math.min(1, (alt - 5) / 45));
+      total += facing * (1 - v.shade) * altNorm;
+      samples++;
+    }
+    return samples ? (total / samples) * 100 : 0;
+  }
+
+  // Score across the day window (hourly sampling)
+  function scoreVenueDay(v, date){
+    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), DAY_START_HOUR, 0, 0, 0);
+    const end   = new Date(date.getFullYear(), date.getMonth(), date.getDate(), DAY_END_HOUR, 0, 0, 0);
+    return scoreVenueRange(v, start, end, 60);
+  }
+
+  function getNowWindow(date){
+    // If now within [12:00, 18:00], return [now, min(now+60m, 18:00)] else null
+    const now = new Date(date);
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), DAY_START_HOUR, 0, 0, 0);
+    const dayEnd   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), DAY_END_HOUR, 0, 0, 0);
+    if(now < dayStart || now > dayEnd) return null;
+
+    const end = new Date(Math.min(now.getTime() + NOW_WINDOW_MIN*60000, dayEnd.getTime()));
+    return { start: now, end };
+  }
+
+  function refreshAll(){
+    clearMarkers();
+
+    const now = new Date();
+    const nowWindow = getNowWindow(now);
+
+    // compute both scores: day score always; now score only if in window
+    const scored = venues.map(v => {
+      const scoreDay = scoreVenueDay(v, now);
+      const scoreNow = nowWindow ? scoreVenueRange(v, nowWindow.start, nowWindow.end, NOW_STEP_MIN) : null;
+      return { ...v, scoreDay, scoreNow };
+    });
+
+    // Determine winner logic + marker color logic
+    // - If nowWindow exists: rank by scoreNow (real-time)
+    // - Else: rank by scoreDay (upcoming window)
+    const ranked = scored.slice().sort((a,b) => {
+      const av = (nowWindow ? a.scoreNow : a.scoreDay) ?? -1;
+      const bv = (nowWindow ? b.scoreNow : b.scoreDay) ?? -1;
+      return bv - av;
+    });
+
+    const best = ranked[0];
+    const banner = document.getElementById('banner');
+
+    if(nowWindow){
+      banner.firstChild.textContent = `Best right now: ${best.name} ${scoreEmoji(best.scoreNow)} (${best.scoreNow.toFixed(1)})`;
+      banner.querySelector('.sub').textContent =
+        `Now window: ${formatHourMin(nowWindow.start)}–${formatHourMin(nowWindow.end)} • Also best for 12–6: ${bestDayWinner(scored).name}`;
+    }else{
+      const bestDay = bestDayWinner(scored);
+      banner.firstChild.textContent = `Not in 12–6 yet. Best for today (12–6): ${bestDay.name} ${scoreEmoji(bestDay.scoreDay)} (${bestDay.scoreDay.toFixed(1)})`;
+      banner.querySelector('.sub').textContent =
+        `Real-time turns on at ${formatHour(DAY_START_HOUR)} • Current time: ${formatHourMin(now)}`;
+    }
+
+    // Build list: show NOW score when available, otherwise show DAY score
+    const list = document.getElementById('list');
+    list.innerHTML = "";
+
+    ranked.forEach((v, i) => {
+      const useScore = (nowWindow ? v.scoreNow : v.scoreDay);
+      const c = color(useScore);
+      const radius = 9 + (useScore / 22);
+
+      const m = L.circleMarker([v.lat, v.lng], {
+        radius,
+        color: c,
+        fillColor: c,
+        fillOpacity: 0.92,
+        weight: 2
+      }).addTo(map);
+
+      const scoreLine = nowWindow
+        ? `<b>Now score</b>: ${v.scoreNow.toFixed(1)} (${formatHourMin(nowWindow.start)}–${formatHourMin(nowWindow.end)})<br><b>12–6 score</b>: ${v.scoreDay.toFixed(1)}`
+        : `<b>12–6 score</b>: ${v.scoreDay.toFixed(1)} (upcoming window)`;
+
+      m.bindPopup(`<b>${v.name}</b><br>${v.address}<br>${scoreLine}<br><b>Facing:</b> ${dirLabel(v.facing)} • <b>Shade:</b> ${v.shade}`);
+
+      // glow + pulse on #1
+      const applyEffects = () => {
+        const el = m.getElement();
+        if(!el) return;
+        el.style.filter = glowCSS(c);
+        if(i === 0) el.classList.add('bestPulse');
+      };
+      if(m.getElement()) applyEffects();
+      else m.on('add', applyEffects);
+
+      markerObjs.push({ venue: v.name, marker: m, scoreNow: v.scoreNow, scoreDay: v.scoreDay });
+
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML = `
+        <div>
+          <div class="name">${i+1}. ${v.name}</div>
+          <div class="meta">${v.address}</div>
+          <div class="meta">Facing: ${dirLabel(v.facing)} • Shade: ${v.shade}</div>
+        </div>
+        <div class="scorePill">${scoreEmoji(useScore)} ${useScore.toFixed(1)}</div>
+      `;
+      div.onclick = () => {
+        map.setView([v.lat, v.lng], 16, { animate:true });
+        m.openPopup();
+        const old = radius;
+        m.setRadius(old + 3);
+        setTimeout(()=> m.setRadius(old), 320);
+      };
+      list.appendChild(div);
+    });
+  }
+
+  function bestDayWinner(scored){
+    return scored.slice().sort((a,b)=> b.scoreDay - a.scoreDay)[0];
+  }
+
+  function buildForecast(){
+    const container = document.getElementById('forecast');
+    container.innerHTML = "";
+    const base = new Date();
+
+    for(let i=0;i<7;i++){
+      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate()+i);
+      const scored = venues.map(v => ({...v, scoreDay: scoreVenueDay(v, d)}))
+        .sort((a,b)=> b.scoreDay - a.scoreDay);
+      const top3 = scored.slice(0,3);
+
+      const card = document.createElement('div');
+      card.className = 'forecastCard';
+      const dayName = d.toLocaleDateString(undefined, { weekday:'long' });
+      const dayDate = d.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+
+      card.innerHTML = `
+        <div class="forecastTop">
+          <div>
+            <div class="forecastDay">${dayName}</div>
+            <div class="forecastDate">${dayDate} • ${formatHour(DAY_START_HOUR)}–${formatHour(DAY_END_HOUR)}</div>
+          </div>
+          <div class="scorePill">${top3[0].scoreDay.toFixed(1)}</div>
+        </div>
+        <div class="small" style="margin-top:10px">
+          🥇 <b>${top3[0].name}</b> ${scoreEmoji(top3[0].scoreDay)} (${top3[0].scoreDay.toFixed(1)})<br>
+          🥈 ${top3[1].name} ${scoreEmoji(top3[1].scoreDay)} (${top3[1].scoreDay.toFixed(1)})<br>
+          🥉 ${top3[2].name} ${scoreEmoji(top3[2].scoreDay)} (${top3[2].scoreDay.toFixed(1)})
+        </div>
+      `;
+      card.onclick = () => {
+        showToday();
+        const w = top3[0];
+        map.setView([w.lat, w.lng], 16, { animate:true });
+        // set banner to forecast day winner
+        const banner = document.getElementById('banner');
+        banner.firstChild.textContent = `Forecast winner (${dayName}): ${w.name} ${scoreEmoji(w.scoreDay)} (${w.scoreDay.toFixed(1)})`;
+        banner.querySelector('.sub').textContent = `Window: ${formatHour(DAY_START_HOUR)}–${formatHour(DAY_END_HOUR)} • Tap Refresh to return to real-time`;
+      };
+      container.appendChild(card);
+    }
+  }
+
+  function showToday(){
+    document.getElementById('todayPanel').style.display = '';
+    document.getElementById('forecastPanel').style.display = 'none';
+    document.getElementById('todayTab').classList.add('active');
+    document.getElementById('forecastTab').classList.remove('active');
+    setTimeout(()=> map.invalidateSize(), 120);
+  }
+  function showForecast(){
+    document.getElementById('todayPanel').style.display = 'none';
+    document.getElementById('forecastPanel').style.display = '';
+    document.getElementById('todayTab').classList.remove('active');
+    document.getElementById('forecastTab').classList.add('active');
+    buildForecast();
+    setTimeout(()=> map.invalidateSize(), 120);
+  }
+
+  function centerOnMe(){
+    if(!navigator.geolocation){
+      const banner = document.getElementById('banner');
+      banner.firstChild.textContent = "GPS not available on this device.";
+      banner.querySelector('.sub').textContent = "";
+      return;
+    }
+    const banner = document.getElementById('banner');
+    banner.firstChild.textContent = "Locating…";
+    banner.querySelector('.sub').textContent = "";
+    navigator.geolocation.getCurrentPosition((pos)=>{
+      const { latitude, longitude } = pos.coords;
+      map.setView([latitude, longitude], 14, { animate:true });
+      refreshAll();
+    }, ()=>{
+      banner.firstChild.textContent = "Location denied. (Still works without it.)";
+      banner.querySelector('.sub').textContent = "";
+      refreshAll();
+    }, { enableHighAccuracy:true, timeout:8000 });
+  }
+
+  // auto-refresh every 5 minutes (lightweight)
+  setInterval(() => {
+    // only refresh if on Today tab
+    if(document.getElementById('todayTab').classList.contains('active')) refreshAll();
+  }, 5 * 60000);
+
+  // init
+  refreshAll();
+</script>
+</body>
+</html>
