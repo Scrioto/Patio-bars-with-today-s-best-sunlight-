@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Sac Patio Sun Map</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+
+<style>
+  :root{
+    --bg:#0f1116; --text:#f5f6fa; --muted:#c9cede; --line:rgba(255,255,255,.10);
+    --accent:#ffb020;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,system-ui}
+  header{padding:14px 14px 8px;font-weight:900;font-size:18px;letter-spacing:.2px}
+  #banner{
+    position:sticky; top:0; z-index:999;
+    background:rgba(255,176,32,.92); color:#111;
+    padding:12px 14px; font-weight:950; line-height:1.2;
+    backdrop-filter: blur(10px);
+    border-bottom:1px solid rgba(0,0,0,.08);
+  }
+  #banner .sub{display:block;font-size:12px;font-weight:850;opacity:.92;margin-top:4px}
+  #map{height:54vh}
+  .tabs{display:flex; gap:8px; padding:10px 14px}
+  .tab{
+    flex:1; padding:10px 12px; text-align:center;
+    border-radius:999px;
+    background:rgba(255,255,255,.04);
+    border:1px solid var(--line);
+    color:var(--muted);
+    font-weight:900;
+    user-select:none;
+  }
+  .tab.active{
+    background:rgba(255,176,32,.14);
+    border-color:rgba(255,176,32,.35);
+    color:var(--text);
+  }
+  .panel{padding:14px}
+  .btnRow{display:flex; gap:10px; margin-bottom:12px}
+  button{
+    flex:1;
+    padding:12px 12px;
+    border-radius:14px;
+    border:1px solid rgba(255,255,255,.12);
+    background:linear-gradient(180deg, rgba(255,176,32,1), rgba(255,176,32,.85));
+    color:#111;
+    font-weight:1000;
+  }
+  button.secondary{
+    background:rgba(255,255,255,.04);
+    color:var(--muted);
+    font-weight:900;
+  }
+  .list{
+    border:1px solid var(--line);
+    border-radius:16px;
+    overflow:hidden;
+    background:rgba(255,255,255,.02);
+  }
+  .item{
+    padding:10px 12px;
+    border-bottom:1px solid var(--line);
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+  }
+  .item:last-child{border-bottom:none}
+  .name{font-weight:1000}
+  .meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .scorePill{
+    font-variant-numeric: tabular-nums;
+    font-weight:1000;
+    padding:5px 10px;
+    border-radius:999px;
+    border:1px solid var(--line);
+    background:rgba(255,255,255,.04);
+    align-self:flex-start;
+    white-space:nowrap;
+  }
+  .forecastCard{
+    background:rgba(255,255,255,.03);
+    border:1px solid var(--line);
+    padding:10px 12px;
+    border-radius:16px;
+    margin-bottom:10px;
+  }
+  .forecastTop{display:flex; justify-content:space-between; align-items:baseline; gap:10px}
+  .forecastDay{font-weight:1000}
+  .forecastDate{color:var(--muted); font-size:12px; margin-top:2px}
+  .small{color:var(--muted); font-size:12px}
+  .leaflet-control-attribution{background:rgba(0,0,0,.35)!important;color:#ddd!important;border-radius:10px;padding:2px 8px}
+  .leaflet-container{background:#0b0d12}
+  .bestPulse{animation:pulse 1.9s ease-in-out infinite; transform-origin:center;}
+  @keyframes pulse{0%{transform:scale(1)}50%{transform:scale(1.18)}100%{transform:scale(1)}}
+</style>
+</head>
+<body>
+
+<header>Sac Patio Sun Map ☀️</header>
+<div id="banner">Calculating…<span class="sub">—</span></div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showToday()" id="todayTab">Now</div>
+  <div class="tab" onclick="showForecast()" id="forecastTab">7-Day</div>
+</div>
+
+<div id="map"></div>
+
+<div class="panel" id="todayPanel">
+  <div class="btnRow">
+    <button onclick="refreshAll()">Refresh</button>
+    <button class="secondary" onclick="centerOnMe()">Center on me</button>
+  </div>
+  <div class="list" id="list"></div>
+</div>
+
+<div class="panel" id="forecastPanel" style="display:none">
+  <div id="forecast"></div>
+</div>
+
+<script>
+  // REAL TIME WHEN SUN IS OUT:
+  // - If sun altitude > 0 (daylight): rank by next 60 minutes
+  // - If sun altitude <= 0 (dark): show "Sun is down" + next day's best (12–6) as a planning hint
+  const NOW_WINDOW_MIN = 60;
+  const NOW_STEP_MIN   = 10;
+
+  // Planning window for 7-day (kept simple): 12pm–6pm
+  const PLAN_START_HOUR = 12;
+  const PLAN_END_HOUR   = 18;
+
+  // Facing degrees: N=0, E=90, S=180, W=270
+  const venues = [
+    { name:"LowBrau", address:"1050 20th St", lat:38.5758075, lng:-121.4804924, facing:90,  shade:0.25 },
+    { name:"Biergarten", address:"2332 K St", lat:38.5732770, lng:-121.4747560, facing:0,   shade:0.15 },
+    { name:"Karma Brew", address:"1530 16th St", lat:38.5717379, lng:-121.4881967, facing:90, shade:0.30 },
+    { name:"Midtown Spirits", address:"1731 L St", lat:38.5752550, lng:-121.4826070, facing:270, shade:0.45 },
+    { name:"SacYard", address:"1725 33rd St", lat:38.5642675, lng:-121.46562997, facing:270, shade:0.10 },
+    { name:"Iron Horse Tavern", address:"1800 15th St", lat:38.5770000, lng:-121.4817000, facing:0, shade:0.25 },
+    { name:"Kupros", address:"1517 21st St", lat:38.5715, lng:-121.4762, facing:270, shade:0.30 },
+    { name:"Fieldwork Brewing Co.", address:"1805 Capitol Ave", lat:38.5741465, lng:-121.4836090, facing:180, shade:0.25 }
+  ];
+
+  // Map
+  const map = L.map('map', { zoomControl:false }).setView([38.575, -121.485], 13);
+  L.control.zoom({ position:'bottomright' }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap & CARTO', maxZoom: 19
+  }).addTo(map);
+
+  let markerObjs = [];
+
+  function degDiff(a,b){ return Math.abs(((a - b + 540) % 360) - 180); }
+  function color(score){
+    const clamped = Math.max(0, Math.min(100, score));
+    const hue = 210 - (clamped * 1.8);
+    return `hsl(${hue}, 90%, 58%)`;
+  }
+  function glowCSS(c){ return `drop-shadow(0 0 10px ${c}) drop-shadow(0 0 5px rgba(255,255,255,.15))`; }
+  function scoreEmoji(score){ return (score>=60)?"🔥":(score>=45)?"☀️":(score>=30)?"⛅️":"🌥️"; }
+  function formatHourMin(d){
+    let h = d.getHours(), m = d.getMinutes();
+    const ampm = h >= 12 ? "pm" : "am";
+    h = ((h + 11) % 12) + 1;
+    return `${h}:${String(m).padStart(2,'0')}${ampm}`;
+  }
+  function formatHour(h){
+    const ampm = h >= 12 ? 'pm' : 'am';
+    const hr = ((h + 11) % 12) + 1;
+    return `${hr}${ampm}`;
+  }
+  function dirLabel(deg){
+    if(deg===0) return "N"; if(deg===90) return "E"; if(deg===180) return "S"; if(deg===270) return "W";
+    return `${deg}°`;
+  }
+
+  function clearMarkers(){
+    markerObjs.forEach(o => map.removeLayer(o.marker));
+    markerObjs = [];
+  }
+
+  function scoreVenueRange(v, startDateTime, endDateTime, stepMin){
+    let total = 0, samples = 0;
+    for(let t = new Date(startDateTime); t <= endDateTime; t = new Date(t.getTime() + stepMin*60000)){
+      const pos = SunCalc.getPosition(t, v.lat, v.lng);
+      const alt = pos.altitude * 180/Math.PI;
+      if(alt <= 0) continue;
+      const az = (pos.azimuth * 180/Math.PI + 180 + 360) % 360;
+      const facing = Math.max(0, 1 - degDiff(az, v.facing)/90);
+      const altNorm = Math.max(0, Math.min(1, (alt - 5) / 45));
+      total += facing * (1 - v.shade) * altNorm;
+      samples++;
+    }
+    return samples ? (total / samples) * 100 : 0;
+  }
+
+  function scoreVenuePlan(v, date){
+    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), PLAN_START_HOUR, 0, 0, 0);
+    const end   = new Date(date.getFullYear(), date.getMonth(), date.getDate(), PLAN_END_HOUR, 0, 0, 0);
+    return scoreVenueRange(v, start, end, 60);
+  }
+
+  function isSunOutNow(now){
+    // Use a representative point (midtown) for "sun is out" on the map.
+    const pos = SunCalc.getPosition(now, 38.575, -121.485);
+    return pos.altitude > 0;
+  }
+
+  function refreshAll(){
+    clearMarkers();
+
+    const now = new Date();
+    const sunOut = isSunOutNow(now);
+
+    // Scores:
+    // - If sunOut: NOW score over next 60 min
+    // - Else: PLAN score (12-6) for next day as a hint
+    let ranked;
+
+    if(sunOut){
+      const end = new Date(now.getTime() + NOW_WINDOW_MIN*60000);
+      const scored = venues.map(v => ({...v, score: scoreVenueRange(v, now, end, NOW_STEP_MIN)}));
+      ranked = scored.sort((a,b)=> b.score - a.score);
+
+      const best = ranked[0];
+      const banner = document.getElementById('banner');
+      banner.firstChild.textContent = `Best patio right now: ${best.name} ${scoreEmoji(best.score)} (${best.score.toFixed(1)})`;
+      banner.querySelector('.sub').textContent = `Next ${NOW_WINDOW_MIN} min: ${formatHourMin(now)}–${formatHourMin(end)}`;
+    } else {
+      const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1, 12, 0, 0, 0);
+      const scored = venues.map(v => ({...v, score: scoreVenuePlan(v, tomorrow)}));
+      ranked = scored.sort((a,b)=> b.score - a.score);
+
+      const best = ranked[0];
+      const banner = document.getElementById('banner');
+      banner.firstChild.textContent = `Sun is down. Best tomorrow (12–6): ${best.name} ${scoreEmoji(best.score)} (${best.score.toFixed(1)})`;
+      banner.querySelector('.sub').textContent = `Real-time turns on at sunrise • Current time: ${formatHourMin(now)}`;
+    }
+
+    const list = document.getElementById('list');
+    list.innerHTML = "";
+
+    ranked.forEach((v, i) => {
+      const c = color(v.score);
+      const radius = 9 + (v.score / 22);
+
+      const m = L.circleMarker([v.lat, v.lng], {
+        radius, color: c, fillColor: c, fillOpacity: 0.92, weight: 2
+      }).addTo(map);
+
+      const popupLine = sunOut
+        ? `<b>Now score</b>: ${v.score.toFixed(1)} (next ${NOW_WINDOW_MIN} min)`
+        : `<b>Plan score</b>: ${v.score.toFixed(1)} (tomorrow 12–6)`;
+
+      m.bindPopup(`<b>${v.name}</b><br>${v.address}<br>${popupLine}<br><b>Facing:</b> ${dirLabel(v.facing)} • <b>Shade:</b> ${v.shade}`);
+
+      const applyEffects = () => {
+        const el = m.getElement();
+        if(!el) return;
+        el.style.filter = glowCSS(c);
+        if(i === 0) el.classList.add('bestPulse');
+      };
+      if(m.getElement()) applyEffects(); else m.on('add', applyEffects);
+
+      markerObjs.push({ marker: m });
+
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML = `
+        <div>
+          <div class="name">${i+1}. ${v.name}</div>
+          <div class="meta">${v.address}</div>
+          <div class="meta">Facing: ${dirLabel(v.facing)} • Shade: ${v.shade}</div>
+        </div>
+        <div class="scorePill">${scoreEmoji(v.score)} ${v.score.toFixed(1)}</div>
+      `;
+      div.onclick = () => {
+        map.setView([v.lat, v.lng], 16, { animate:true });
+        m.openPopup();
+        const old = radius;
+        m.setRadius(old + 3);
+        setTimeout(()=> m.setRadius(old), 320);
+      };
+      list.appendChild(div);
+    });
+  }
+
+  function buildForecast(){
+    const container = document.getElementById('forecast');
+    container.innerHTML = "";
+    const base = new Date();
+
+    for(let i=0;i<7;i++){
+      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate()+i);
+      const scored = venues.map(v => ({...v, score: scoreVenuePlan(v, d)})).sort((a,b)=> b.score - a.score);
+      const top3 = scored.slice(0,3);
+
+      const card = document.createElement('div');
+      card.className = 'forecastCard';
+      const dayName = d.toLocaleDateString(undefined, { weekday:'long' });
+      const dayDate = d.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+
+      card.innerHTML = `
+        <div class="forecastTop">
+          <div>
+            <div class="forecastDay">${dayName}</div>
+            <div class="forecastDate">${dayDate} • ${formatHour(PLAN_START_HOUR)}–${formatHour(PLAN_END_HOUR)}</div>
+          </div>
+          <div class="scorePill">${top3[0].score.toFixed(1)}</div>
+        </div>
+        <div class="small" style="margin-top:10px">
+          🥇 <b>${top3[0].name}</b> ${scoreEmoji(top3[0].score)} (${top3[0].score.toFixed(1)})<br>
+          🥈 ${top3[1].name} ${scoreEmoji(top3[1].score)} (${top3[1].score.toFixed(1)})<br>
+          🥉 ${top3[2].name} ${scoreEmoji(top3[2].score)} (${top3[2].score.toFixed(1)})
+        </div>
+      `;
+      card.onclick = () => {
+        showToday();
+        map.setView([top3[0].lat, top3[0].lng], 16, { animate:true });
+      };
+      container.appendChild(card);
+    }
+  }
+
+  function showToday(){
+    document.getElementById('todayPanel').style.display = '';
+    document.getElementById('forecastPanel').style.display = 'none';
+    document.getElementById('todayTab').classList.add('active');
+    document.getElementById('forecastTab').classList.remove('active');
+    setTimeout(()=> map.invalidateSize(), 120);
+  }
+  function showForecast(){
+    document.getElementById('todayPanel').style.display = 'none';
+    document.getElementById('forecastPanel').style.display = '';
+    document.getElementById('todayTab').classList.remove('active');
+    document.getElementById('forecastTab').classList.add('active');
+    buildForecast();
+    setTimeout(()=> map.invalidateSize(), 120);
+  }
+
+  function centerOnMe(){
+    if(!navigator.geolocation) return;
+    const banner = document.getElementById('banner');
+    banner.firstChild.textContent = "Locating…";
+    banner.querySelector('.sub').textContent = "";
+    navigator.geolocation.getCurrentPosition((pos)=>{
+      map.setView([pos.coords.latitude, pos.coords.longitude], 14, { animate:true });
+      refreshAll();
+    }, ()=> refreshAll(), { enableHighAccuracy:true, timeout:8000 });
+  }
+
+  // Auto-refresh every 5 minutes
+  setInterval(() => {
+    if(document.getElementById('todayTab').classList.contains('active')) refreshAll();
+  }, 5 * 60000);
+
+  refreshAll();
+</script>
+</body>
+</html>
