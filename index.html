@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Sac Patio Sun Map v3</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+
+<style>
+body{margin:0;background:#0f1116;color:#f5f6fa;font-family:-apple-system,system-ui}
+header{padding:14px;font-weight:800;font-size:18px}
+#bestBanner{background:#ffb020;color:#111;padding:12px;text-align:center;font-weight:800}
+#map{height:50vh}
+.tabs{display:flex}
+.tab{flex:1;padding:12px;text-align:center;background:#1b1e27}
+.tab.active{background:#2a2f3d;font-weight:800}
+.panel{padding:14px}
+button{padding:12px;border-radius:12px;border:none;background:#ffb020;color:#111;font-weight:800;margin-bottom:10px}
+.item{padding:10px 0;border-bottom:1px solid rgba(255,255,255,.1)}
+.score{float:right;font-weight:800}
+.forecastCard{background:#1b1e27;padding:10px;margin-bottom:10px;border-radius:10px}
+</style>
+</head>
+<body>
+
+<header>Sac Patio Sun Map ☀️</header>
+<div id="bestBanner">Calculating best patio...</div>
+
+<div class="tabs">
+<div class="tab active" onclick="showToday()" id="todayTab">Today</div>
+<div class="tab" onclick="showForecast()" id="forecastTab">7-Day</div>
+</div>
+
+<div id="map"></div>
+
+<div class="panel" id="todayPanel">
+<button onclick="refreshScores()">Refresh Scores</button>
+<div id="list"></div>
+</div>
+
+<div class="panel" id="forecastPanel" style="display:none">
+<div id="forecast"></div>
+</div>
+
+<script>
+
+// Facing degrees: N=0, E=90, S=180, W=270
+const venues=[
+{name:"LowBrau",lat:38.5758,lng:-121.4804,facing:90,shade:0.25},
+{name:"Biergarten",lat:38.5732,lng:-121.4747,facing:0,shade:0.15},
+{name:"Karma Brew",lat:38.5717,lng:-121.4881,facing:90,shade:0.3}, // corrected East
+{name:"Midtown Spirits",lat:38.5752,lng:-121.4826,facing:270,shade:0.45},
+{name:"SacYard",lat:38.5642,lng:-121.4656,facing:270,shade:0.1},
+{name:"Iron Horse Tavern",lat:38.5770,lng:-121.4817,facing:0,shade:0.25},
+{name:"Kupros",lat:38.5715,lng:-121.4762,facing:270,shade:0.3}, // West
+{name:"Garden at The Line",lat:38.5689,lng:-121.4835,facing:180,shade:0.2} // South
+];
+
+const map=L.map('map').setView([38.575,-121.485],13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+let markers=[];
+
+function degDiff(a,b){return Math.abs(((a-b+540)%360)-180);}
+
+function scoreVenue(v,date){
+let total=0,samples=0;
+for(let h=15;h<=19;h++){
+let t=new Date(date.getFullYear(),date.getMonth(),date.getDate(),h);
+let pos=SunCalc.getPosition(t,v.lat,v.lng);
+let alt=pos.altitude*180/Math.PI;
+if(alt<=0)continue;
+let az=(pos.azimuth*180/Math.PI+180+360)%360;
+let facing=Math.max(0,1-degDiff(az,v.facing)/90);
+total+=facing*(1-v.shade);
+samples++;
+}
+return samples?total/samples*100:0;
+}
+
+function color(score){
+if(score>60)return"red";
+if(score>45)return"orange";
+if(score>30)return"gold";
+return"green";
+}
+
+function refreshScores(){
+markers.forEach(m=>map.removeLayer(m));
+markers=[];
+let today=new Date();
+let scored=venues.map(v=>({...v,score:scoreVenue(v,today)}))
+.sort((a,b)=>b.score-a.score);
+
+document.getElementById("bestBanner").innerText=
+"Best Patio Right Now: "+scored[0].name+" ("+scored[0].score.toFixed(1)+")";
+
+let list=document.getElementById("list");
+list.innerHTML="";
+scored.forEach((v,i)=>{
+let marker=L.circleMarker([v.lat,v.lng],{radius:10,color:color(v.score),fillOpacity:0.8}).addTo(map);
+marker.bindPopup("<b>"+v.name+"</b><br>Score: "+v.score.toFixed(1));
+markers.push(marker);
+list.innerHTML+=`<div class="item">${i+1}. ${v.name}<span class="score">${v.score.toFixed(1)}</span></div>`;
+});
+}
+
+function showToday(){
+todayPanel.style.display="";
+forecastPanel.style.display="none";
+todayTab.classList.add("active");
+forecastTab.classList.remove("active");
+}
+
+function showForecast(){
+todayPanel.style.display="none";
+forecastPanel.style.display="";
+todayTab.classList.remove("active");
+forecastTab.classList.add("active");
+buildForecast();
+}
+
+function buildForecast(){
+let container=document.getElementById("forecast");
+container.innerHTML="";
+let base=new Date();
+for(let i=0;i<7;i++){
+let d=new Date(base.getFullYear(),base.getMonth(),base.getDate()+i);
+let scored=venues.map(v=>({...v,score:scoreVenue(v,d)}))
+.sort((a,b)=>b.score-a.score);
+container.innerHTML+=`
+<div class="forecastCard">
+<b>${d.toDateString()}</b><br>
+🥇 ${scored[0].name} (${scored[0].score.toFixed(1)})<br>
+🥈 ${scored[1].name} (${scored[1].score.toFixed(1)})<br>
+🥉 ${scored[2].name} (${scored[2].score.toFixed(1)})
+</div>`;
+}
+}
+
+refreshScores();
+
+</script>
+</body>
+</html>
